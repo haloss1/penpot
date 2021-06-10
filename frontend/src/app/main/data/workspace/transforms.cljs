@@ -425,27 +425,73 @@
 
 ;; -- Apply modifiers
 
+(defn- check-delta
+  [shape root transformed-shape transformed-root objects]
+  (let [root (cond
+               (:component-root? shape)
+               shape
+
+               (nil? root)
+               (cp/get-root-shape shape objects)
+
+               :else root)
+
+        transformed-root (cond
+                           (:component-root? transformed-shape)
+                           transformed-shape
+
+                           (nil? transformed-root)
+                           (cp/get-root-shape transformed-shape objects)
+
+                           :else transformed-root)
+
+        shape-delta (when root
+                      (gpt/point (- (:x shape) (:x root))
+                                 (- (:y shape) (:y root))))
+
+        transformed-shape-delta (when transformed-root
+                                  (gpt/point (- (:x transformed-shape) (:x transformed-root))
+                                             (- (:y transformed-shape) (:y transformed-root))))
+
+        ignore-geometry? (= shape-delta transformed-shape-delta)]
+
+    [root transformed-root ignore-geometry?]))
+
 (defn- set-modifiers-recursive
-  [modif-tree objects shape modifiers]
+  [modif-tree objects shape modifiers root transformed-root]
   (let [children (->> (get shape :shapes [])
                       (map #(get objects %)))
 
-        transformed-shape (when (seq children) ; <- don't calculate it if not needed
-                            (gsh/transform-shape
-                              (assoc shape :modifiers (select-keys modifiers
-                                                                   [:resize-origin
-                                                                    :resize-vector]))))
+        transformed-shape (gsh/transform-shape (assoc shape :modifiers modifiers))
 
+        [root transformed-root ignore-geometry?]
+        (check-delta shape root transformed-shape transformed-root objects)
+
+        modifiers (assoc modifiers :ignore-geometry? ignore-geometry?)
+
+        resized-shape (when (seq children) ; <- don't calculate it if not needed
+                        (gsh/transform-shape
+                          (assoc shape :modifiers (select-keys modifiers
+                                                               [:resize-origin
+                                                                :resize-vector]))))
         set-child (fn [modif-tree child]
                     (let [child-modifiers (gsh/calc-child-modifiers shape
-                                                                    transformed-shape
+                                                                    resized-shape
                                                                     child
                                                                     modifiers)]
                       (set-modifiers-recursive modif-tree
                                                objects
                                                child
-                                               child-modifiers)))]
+                                               child-modifiers
+                                               root
+                                               transformed-root)))]
 
+    (js/console.log "shape" (:name shape) (:x shape) (:y shape))
+    (js/console.log "transformed-shape" (:name transformed-shape) (:x transformed-shape) (:y transformed-shape))
+    (js/console.log "root" (:name root) (:x root) (:y root))
+    (js/console.log "transformed-root" (:name transformed-root) (:x transformed-root) (:y transformed-root))
+    ;; (js/console.log "shape-delta" (clj->js shape-delta))
+    ;; (js/console.log "transformed-shape-delta" (clj->js transformed-shape-delta))
     (reduce set-child
             (update-in modif-tree [(:id shape) :modifiers] #(merge % modifiers))
             children)))
@@ -464,11 +510,20 @@
              ids (->> ids (into #{} (remove #(get-in objects [% :blocked] false))))]
 
          (reduce (fn [state id]
-                   (update state :workspace-modifiers
-                           #(set-modifiers-recursive %
-                                                     objects
-                                                     (get objects id)
-                                                     modifiers)))
+                   ;; (let [shape (get objects id)
+                   ;;       root (cp/get-root-shape shape objects)
+                   ;;       transformed-root (when root
+                   ;;                          (if (= root shape)
+                   ;;                            (gsh/transform-shape (assoc root :modifiers modifiers))
+                   ;;                            root))]
+                     (update state :workspace-modifiers
+                             #(set-modifiers-recursive %
+                                                       objects
+                                                       (get objects id)
+                                                       modifiers
+                                                       nil
+                                                       nil)))
+                 ;)
                  state
                  ids))))))
 
@@ -530,28 +585,32 @@
              state (if set-modifiers?
                      (ptk/update (set-modifiers ids) state)
                      state)
-             object-modifiers (get state :workspace-modifiers)]
+             object-modifiers (get state :workspace-modifiers)
+
+             ignore-tree (d/mapm #(get-in %2 [:modifiers :ignore-geometry?]) object-modifiers)]
 
          (rx/of (dwu/start-undo-transaction)
                 (dch/update-shapes
-                 ids-with-children
-                 (fn [shape]
-                   (-> shape
-                       (merge (get object-modifiers (:id shape)))
-                       (gsh/transform-shape)))
-                 {:reg-objects? true
-                  ;; Attributes that can change in the transform. This way we don't have to check
-                  ;; all the attributes
-                  :attrs [:selrect :points
-                          :x :y
-                          :width :height
-                          :content
-                          :transform
-                          :transform-inverse
-                          :rotation
-                          :flip-x
-                          :flip-y]
-                  })
+                  ids-with-children
+                  (fn [shape]
+                    (-> shape
+                        (merge (get object-modifiers (:id shape)))
+                        (d/tap-r #(js/console.log "shape" (:name shape) "ignore-geometry?" (clj->js (get-in % [:modifiers :ignore-geometry?]))))
+                        (gsh/transform-shape)))
+                  {:reg-objects? true
+                   :ignore-tree ignore-tree
+                   ;; Attributes that can change in the transform. This way we don't have to check
+                   ;; all the attributes
+                   :attrs [:selrect :points
+                           :x :y
+                           :width :height
+                           :content
+                           :transform
+                           :transform-inverse
+                           :rotation
+                           :flip-x
+                           :flip-y]
+                   })
                 (clear-local-transform)
                 (dwu/commit-undo-transaction)))))))
 
@@ -581,7 +640,7 @@
             (fn [objects shape-id]
               (let [shape (get objects shape-id)
                     modifier (gsh/resize-modifiers shape attr value)]
-                (set-modifiers-recursive objects objects shape modifier)))]
+                (set-modifiers-recursive objects objects shape modifier nil nil)))]
 
         (d/update-in-when
          state
