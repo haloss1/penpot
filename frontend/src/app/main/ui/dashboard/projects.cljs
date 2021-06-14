@@ -12,17 +12,18 @@
    [app.main.refs :as refs]
    [app.main.store :as st]
    [app.main.ui.dashboard.grid :refer [line-grid]]
+   [app.main.ui.dashboard.import :refer [import-button]]
    [app.main.ui.dashboard.inline-edition :refer [inline-edition]]
    [app.main.ui.dashboard.project-menu :refer [project-menu]]
    [app.main.ui.icons :as i]
+   [app.util.debug :as d]
    [app.util.dom :as dom]
    [app.util.i18n :as i18n :refer [t tr]]
    [app.util.keyboard :as kbd]
    [app.util.router :as rt]
    [app.util.time :as dt]
    [okulary.core :as l]
-   [rumext.alpha :as mf]
-   [app.main.ui.dashboard.import :refer [import-button]]))
+   [rumext.alpha :as mf]))
 
 (mf/defc header
   {::mf/wrap [mf/memo]}
@@ -138,8 +139,9 @@
                        (dt/timeago {:locale locale}))]
           [:span.recent-files-row-title-info (str ", " time)]))
 
-      #_[:& import-button {:project-id (:id project)
-                         :on-finish-import on-finish-import}]
+      (when (d/debug? :import)
+        [:& import-button {:project-id (:id project)
+                           :on-finish-import on-finish-import}])
 
       [:a.btn-secondary.btn-small
        {:on-click create-file}
